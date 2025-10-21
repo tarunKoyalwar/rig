@@ -302,6 +302,7 @@ where
         if let Some(text) = self.prompt.rag_text() {
             agent_span.record("gen_ai.prompt", text);
         }
+        let _agent_span_guard = agent_span.enter();
 
         let cancel_sig = CancelSignal::new();
 
