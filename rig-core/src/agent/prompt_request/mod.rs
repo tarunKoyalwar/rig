@@ -357,6 +357,17 @@ where
                 gen_ai.usage.input_tokens = tracing::field::Empty,
                 gen_ai.input.messages = tracing::field::Empty,
                 gen_ai.output.messages = tracing::field::Empty,
+                gen_ai.request.temperature = agent.temperature,
+                gen_ai.request.max_tokens = tracing::field::Empty,
+                gen_ai.request.top_p = tracing::field::Empty,
+                gen_ai.request.top_k = tracing::field::Empty,
+                gen_ai.request.frequency_penalty = tracing::field::Empty,
+                gen_ai.request.presence_penalty = tracing::field::Empty,
+                gen_ai.request.stop_sequences = tracing::field::Empty,
+                gen_ai.request.seed = tracing::field::Empty,
+                gen_ai.request.choice.count = tracing::field::Empty,
+                gen_ai.request.encoding_formats = tracing::field::Empty,
+                gen_ai.request.parameters = tracing::field::Empty,
             );
 
             let chat_span = if current_span_id.load(Ordering::SeqCst) != 0 {
@@ -369,6 +380,80 @@ where
             if let Some(id) = chat_span.id() {
                 current_span_id.store(id.into_u64(), Ordering::SeqCst);
             };
+
+            // Extract and record known parameters from additional_params
+            if let Some(ref params) = agent.additional_params {
+                // Extract numeric parameters
+                if let Some(max_tokens) = params.get("max_tokens").and_then(|v| v.as_u64()) {
+                    chat_span.record("gen_ai.request.max_tokens", max_tokens);
+                }
+                if let Some(top_p) = params.get("top_p").and_then(|v| v.as_f64()) {
+                    chat_span.record("gen_ai.request.top_p", top_p);
+                }
+                if let Some(top_k) = params.get("top_k").and_then(|v| v.as_i64()) {
+                    chat_span.record("gen_ai.request.top_k", top_k);
+                }
+                if let Some(frequency_penalty) =
+                    params.get("frequency_penalty").and_then(|v| v.as_f64())
+                {
+                    chat_span.record("gen_ai.request.frequency_penalty", frequency_penalty);
+                }
+                if let Some(presence_penalty) =
+                    params.get("presence_penalty").and_then(|v| v.as_f64())
+                {
+                    chat_span.record("gen_ai.request.presence_penalty", presence_penalty);
+                }
+                if let Some(seed) = params.get("seed").and_then(|v| v.as_i64()) {
+                    chat_span.record("gen_ai.request.seed", seed);
+                }
+                if let Some(count) = params.get("n").and_then(|v| v.as_u64()) {
+                    chat_span.record("gen_ai.request.choice.count", count);
+                }
+
+                // Extract array parameters - record as JSON strings
+                if let Some(stop_sequences) = params
+                    .get("stop_sequences")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| serde_json::to_string(arr).ok())
+                {
+                    chat_span.record("gen_ai.request.stop_sequences", stop_sequences.as_str());
+                }
+
+                if let Some(encoding_formats) = params
+                    .get("encoding_formats")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| serde_json::to_string(arr).ok())
+                {
+                    chat_span.record("gen_ai.request.encoding_formats", encoding_formats.as_str());
+                }
+
+                // Filter out known parameters and record the remaining ones
+                let known_keys = [
+                    "max_tokens",
+                    "top_p",
+                    "top_k",
+                    "frequency_penalty",
+                    "presence_penalty",
+                    "stop_sequences",
+                    "seed",
+                    "n",
+                    "encoding_formats",
+                ];
+
+                if let Some(obj) = params.as_object() {
+                    let remaining_params: serde_json::Map<String, serde_json::Value> = obj
+                        .iter()
+                        .filter(|(k, _)| !known_keys.contains(&k.as_str()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+
+                    if !remaining_params.is_empty()
+                        && let Ok(json_str) = serde_json::to_string(&remaining_params)
+                    {
+                        chat_span.record("gen_ai.request.parameters", json_str.as_str());
+                    }
+                }
+            }
 
             let resp = agent
                 .completion(
