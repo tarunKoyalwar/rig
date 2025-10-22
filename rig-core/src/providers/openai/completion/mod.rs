@@ -9,7 +9,7 @@ use crate::completion::{
 use crate::http_client::{self, HttpClientExt};
 use crate::message::{AudioMediaType, DocumentSourceKind, ImageDetail, MimeType};
 use crate::one_or_many::string_or_one_or_many;
-use crate::telemetry::{ProviderRequestExt, ProviderResponseExt, SpanCombinator};
+use crate::telemetry::{ProviderResponseExt, SpanCombinator};
 use crate::{OneOrMany, completion, json_utils, message};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -911,71 +911,6 @@ impl crate::telemetry::ProviderRequestExt for CompletionRequest {
     fn get_model_name(&self) -> String {
         self.model.clone()
     }
-
-    fn get_invocation_parameters(&self) -> crate::telemetry::InvocationParameters {
-        let mut params = crate::telemetry::InvocationParameters::new();
-
-        // Extract standard parameters
-        if let Some(temp) = self.temperature {
-            params.temperature = Some(temp);
-        }
-
-        // Extract additional parameters from the flattened JSON
-        if let Some(additional) = &self.additional_params {
-            // Try to extract known parameters from additional_params
-            if let Some(obj) = additional.as_object() {
-                if let Some(max_tokens) = obj.get("max_tokens").and_then(|v| v.as_u64()) {
-                    params.max_tokens = Some(max_tokens);
-                }
-                if let Some(top_p) = obj.get("top_p").and_then(|v| v.as_f64()) {
-                    params.top_p = Some(top_p);
-                }
-                if let Some(frequency_penalty) = obj.get("frequency_penalty").and_then(|v| v.as_f64()) {
-                    params.frequency_penalty = Some(frequency_penalty);
-                }
-                if let Some(presence_penalty) = obj.get("presence_penalty").and_then(|v| v.as_f64()) {
-                    params.presence_penalty = Some(presence_penalty);
-                }
-                if let Some(seed) = obj.get("seed").and_then(|v| v.as_i64()) {
-                    params.seed = Some(seed);
-                }
-                if let Some(n) = obj.get("n").and_then(|v| v.as_u64()) {
-                    params.choice_count = Some(n as u32);
-                }
-
-                // Handle stop sequences (can be string or array)
-                if let Some(stop) = obj.get("stop") {
-                    let stop_sequences = match stop {
-                        serde_json::Value::String(s) => vec![s.clone()],
-                        serde_json::Value::Array(arr) => arr
-                            .iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect(),
-                        _ => vec![],
-                    };
-                    if !stop_sequences.is_empty() {
-                        params.stop_sequences = Some(stop_sequences);
-                    }
-                }
-
-                // Store remaining additional params (excluding the ones we already extracted)
-                let mut remaining = serde_json::Map::new();
-                for (key, value) in obj.iter() {
-                    if !matches!(
-                        key.as_str(),
-                        "max_tokens" | "top_p" | "frequency_penalty" | "presence_penalty" | "seed" | "n" | "stop"
-                    ) {
-                        remaining.insert(key.clone(), value.clone());
-                    }
-                }
-                if !remaining.is_empty() {
-                    params.additional_params = Some(serde_json::Value::Object(remaining));
-                }
-            }
-        }
-
-        params
-    }
 }
 
 impl CompletionModel<reqwest::Client> {
@@ -1015,7 +950,6 @@ impl completion::CompletionModel for CompletionModel<reqwest::Client> {
         let request = CompletionRequest::try_from((self.model.to_owned(), completion_request))?;
 
         span.record_model_input(&request.messages);
-        span.record_invocation_parameters(&request.get_invocation_parameters());
 
         let body = serde_json::to_vec(&request)?;
 

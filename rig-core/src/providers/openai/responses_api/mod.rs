@@ -19,7 +19,6 @@ use crate::message::{
     MimeType, Text,
 };
 use crate::one_or_many::string_or_one_or_many;
-use crate::telemetry::{ProviderRequestExt, SpanCombinator};
 
 use crate::{OneOrMany, completion, message};
 use serde::{Deserialize, Serialize};
@@ -95,7 +94,7 @@ pub struct InputItem {
 }
 
 /// Message roles. Used by OpenAI Responses API to determine who created a given message.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     User,
@@ -693,86 +692,6 @@ impl TryFrom<(String, crate::completion::CompletionRequest)> for CompletionReque
     }
 }
 
-impl crate::telemetry::ProviderRequestExt for CompletionRequest {
-    type InputMessage = InputItem;
-
-    fn get_input_messages(&self) -> Vec<Self::InputMessage> {
-        self.input.iter().cloned().collect()
-    }
-
-    fn get_system_prompt(&self) -> Option<String> {
-        self.instructions.clone()
-    }
-
-    fn get_model_name(&self) -> String {
-        self.model.clone()
-    }
-
-    fn get_prompt(&self) -> Option<String> {
-        // Try to get the last user message from the input
-        // Since we can't reverse the iterator, collect and reverse
-        let items: Vec<_> = self.input.iter().collect();
-        items.iter().rev().find_map(|item| {
-            if item.role == Some(Role::User) {
-                match &item.input {
-                    InputContent::Message(Message::User { content, .. }) => {
-                        // content is OneOrMany<UserContent>
-                        // first() returns a reference, not an Option
-                        let c = content.first();
-                        match c {
-                            UserContent::InputText { text } => Some(text.clone()),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        })
-    }
-
-    fn get_invocation_parameters(&self) -> crate::telemetry::InvocationParameters {
-        let mut params = crate::telemetry::InvocationParameters::new();
-
-        // Extract standard parameters from the main struct
-        if let Some(max_tokens) = self.max_output_tokens {
-            params.max_tokens = Some(max_tokens);
-        }
-
-        if let Some(temp) = self.temperature {
-            params.temperature = Some(temp);
-        }
-
-        // Extract parameters from additional_parameters
-        if let Some(top_p) = self.additional_parameters.top_p {
-            params.top_p = Some(top_p);
-        }
-
-        // Note: Responses API doesn't directly expose frequency_penalty, presence_penalty, etc.
-        // These would need to be added to AdditionalParameters if needed
-
-        // Store additional parameters that don't fit into standard fields
-        let additional_json = self.additional_parameters.clone().to_json();
-        if let Some(obj) = additional_json.as_object() {
-            if !obj.is_empty() {
-                // Filter out parameters we already extracted
-                let mut remaining = serde_json::Map::new();
-                for (key, value) in obj.iter() {
-                    if key != "top_p" {
-                        remaining.insert(key.clone(), value.clone());
-                    }
-                }
-                if !remaining.is_empty() {
-                    params.additional_params = Some(serde_json::Value::Object(remaining));
-                }
-            }
-        }
-
-        params
-    }
-}
-
 /// The completion model struct for OpenAI's response API.
 #[derive(Clone)]
 pub struct ResponsesCompletionModel<T = reqwest::Client> {
@@ -1151,7 +1070,6 @@ impl completion::CompletionModel for ResponsesCompletionModel<reqwest::Client> {
             serde_json::to_string(&request.input)
                 .expect("openai request to successfully turn into a JSON value"),
         );
-        span.record_invocation_parameters(&request.get_invocation_parameters());
         let body = serde_json::to_vec(&request)?;
         tracing::debug!(
             "OpenAI Responses API input: {request}",
